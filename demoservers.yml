@@ -1,0 +1,146 @@
+Description: |
+  Susanne Brockmann - Udacity Cloud Tech Course 
+
+Parameters:
+
+     EnvironmentName:
+         Description: Env Name that will be prefixed in order to access Variables exported in the stack from Lession 21
+         Type: String
+
+Resources:
+
+  LBSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Allow http to Load Balanacer
+      VpcId: 
+          Fn::ImportValue:
+            !Sub "${EnvironmentName}-VPCID"
+      GroupName: Security Group for Load Balancer
+      SecurityGroupEgress: 
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: tcp
+      SecurityGroupIngress: 
+        - CidrIp: 0.0.0.0/0
+          FromPort: 80
+          ToPort: 80
+          IpProtocol: tcp
+        - CidrIp: 0.0.0.0/0
+          FromPort: 8080
+          ToPort: 8080
+          IpProtocol: tcp
+   
+  WebServerSecGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: Allow http / SSH only from local VPC
+      VpcId: 
+          Fn::ImportValue:
+            !Sub "${EnvironmentName}-VPCID"
+      GroupName: Security Group for WebServer internal traffic
+      SecurityGroupEgress: 
+        - CidrIp: 0.0.0.0/0
+          FromPort: 0
+          ToPort: 65535
+          IpProtocol: tcp
+      SecurityGroupIngress: 
+        - CidrIp: 0.0.0.0/0
+          FromPort: 8080
+          ToPort: 8080
+          IpProtocol: tcp
+        - CidrIp: 0.0.0.0/0
+          FromPort: 22
+          ToPort: 22
+          IpProtocol: tcp
+
+  WebAppLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          # install docker
+          apt-get update
+          apt-get install -y apt-transport-https ca-certificates gnupg-agent software-properties-common
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+          sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+          apt-get update
+          apt-get install -y docker-ce
+          usermod -aG docker ubuntu
+          docker run -p 8080:8080 tomcat:8.0
+      # Amazon Linux AMI 2018.03.0 (HVM), SSD Volume Type - ami-01460aa81365561fe
+      #ImageId: ami-01460aa81365561fe  #Amazon Linux AMI 2018.03.0 (HVM), SSD Volume Type
+      ImageId: ami-005bdb005fb00e791   #according to video lecture
+      
+      #ImageId: ami-01f14919ba412de34  # ubuntu/images/hvm-ssd/ubuntu-bionic-18.04-amd64-server-20191002
+      #KeyName: AndreAWS  # Replace this or get rid of if you don't want to log into the machines
+      SecurityGroups:
+       - Ref: WebServerSecGroup
+      InstanceType: t2.micro  # i don't think we really need a t3.medium here so don't burn money and use a smaller one
+      BlockDeviceMappings:
+       - DeviceName: "/dev/sdk" 
+         Ebs:
+           VolumeSize: '8'
+
+  WebAppGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties: 
+      VPCZoneIdentifier: 
+      - Fn::ImportValue:
+          !Sub "${EnvironmentName}-PRIV-NETS" 
+      LaunchConfigurationName:
+        Ref: WebAppLaunchConfig
+      MinSize: '1'
+      MaxSize: '1'
+      TargetGroupARNs:
+        - Ref: WebAppTargetGroup
+
+  WebAppLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties: 
+      Subnets: 
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB1-SN"
+        - Fn::ImportValue: !Sub "${EnvironmentName}-PUB2-SN"
+      SecurityGroups: 
+        - Ref: LBSecGroup
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties: 
+      DefaultActions: 
+        - Type: forward
+          TargetGroupArn:
+            Ref: WebAppTargetGroup
+      LoadBalancerArn: 
+        Ref: WebAppLB
+      Port: '80'
+      Protocol: HTTP
+
+  ALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties: 
+      Actions: 
+        - Type: forward
+          TargetGroupArn: !Ref WebAppTargetGroup
+      Conditions: 
+        - Field: path-pattern
+          Values: [/]
+      ListenerArn: !Ref 'Listener'
+      Priority: 1
+
+  WebAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties: 
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: 
+        Fn::ImportValue:
+          Fn::Sub: "${EnvironmentName}-VPCID"
